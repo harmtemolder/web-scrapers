@@ -1,15 +1,16 @@
 from bs4 import BeautifulSoup
-import numpy as np
 from pathlib import Path
-import scipy.interpolate as si
+import random
 from selenium import webdriver
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.common.exceptions import TimeoutException, \
-    NoSuchElementException, NoAlertPresentException, UnexpectedAlertPresentException
+    NoSuchElementException, UnexpectedAlertPresentException, \
+    StaleElementReferenceException, NoAlertPresentException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from tenacity import retry
 import time
 import warnings
 import yaml
@@ -29,18 +30,6 @@ def element_exists(driver, by, value):
         return False
 
 
-def alert_exists(driver):
-    """
-    :param driver: A selenium `webdriver` object
-    :return: True or False, whether an alert exists
-    """
-    try:
-        driver.switch_to.alert()
-        return True
-    except NoAlertPresentException:
-        return False
-
-
 def get_credentials(credentials_yaml):
     """
     :param credentials_yaml: Path to a YAML file containing credentials
@@ -53,80 +42,74 @@ def get_credentials(credentials_yaml):
     return (credentials['username'], credentials['password'])
 
 
+def alert_exists(driver):
+    try:
+        driver.switch_to.alert
+        return True
+    except NoAlertPresentException:
+        return False
+
+
+@retry
 def solve_recaptcha(driver):
     """
 
     :param driver: A selenium `webdriver` object
     :return: True if solved, False if not
     """
+    driver.switch_to.default_content()
     captcha_frame = driver.find_element_by_css_selector(
         'iframe[src^="https://www.google.com/recaptcha/api2/bframe"]')
     buster_counter = 0
 
-    while buster_counter < 10 and not element_exists(driver, By.ID, 'logout-btn'):
-        # if alert_exists(driver):
-        #     driver.switch_to.alert().accept()
+    while not element_exists(driver, By.ID, 'logout-btn'):
 
         driver.switch_to.frame(captcha_frame)
+        
+        if element_exists(driver, By.ID, 'recaptcha-audio-button'):
+            audio_button = driver.find_element_by_id('recaptcha-audio-button')
+            long_click(driver, audio_button)
 
         try:
             solve_button = WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((By.ID, 'solver-button')))
             time.sleep(1)
-            move_mouse_to(driver, solve_button, solve_button)
-            solve_button.click()
+            long_click(driver, solve_button)
             time.sleep(20)
+
+            if alert_exists(driver):
+                driver.switch_to.alert.accept()
         except TimeoutException:
             warnings.warn('Buster\'s solve button did not appear, retrying...')
+            raise
         except UnexpectedAlertPresentException:
-            driver.switch_to.alert().accept()
+            warnings.warn(
+                'Some alert popped up, accepting that and retrying...')
+            driver.switch_to.alert.accept()
+            raise
 
         buster_counter += 1
-        driver.switch_to.default_content()
 
     if element_exists(driver, By.ID, 'logout-btn'):
         return True
     return False
 
 
-def move_mouse_to(driver, from_element, to_element):
-    points = np.array([[0, 0], [0, 2], [2, 3], [4, 0], [6, 3], [8, 2], [8, 0]])
+def long_click(driver, element):
+    """Clicks an `element` for a random amount of time
 
-    x = points[:, 0]
-    y = points[:, 1]
-
-    t = range(len(points))
-    ipl_t = np.linspace(0.0, len(points) - 1, 100)
-
-    x_tup = si.splrep(t, x, k=3)
-    y_tup = si.splrep(t, y, k=3)
-
-    x_list = list(x_tup)
-    xl = x.tolist()
-    x_list[1] = xl + [0.0, 0.0, 0.0, 0.0]
-
-    y_list = list(y_tup)
-    yl = y.tolist()
-    y_list[1] = yl + [0.0, 0.0, 0.0, 0.0]
-
-    x_i = si.splev(ipl_t, x_list)  # x interpolate values
-    y_i = si.splev(ipl_t, y_list)  # y interpolate values
+    :param driver:
+    :param element:
+    :return:
+    """
+    delay = random.randrange(100, 1000) / 1000.0
 
     action = ActionChains(driver)
-
-    # Move to the `from_element`
-    action.move_to_element(from_element)
+    action.click_and_hold(element)
     action.perform()
-
-    # Then along the generated curve
-    for mouse_x, mouse_y in zip(x_i, y_i):
-        action.move_by_offset(mouse_x, mouse_y)
-        action.perform()
-
-    # And finally to the `to_element`
-    action.move_to_element(to_element)
+    time.sleep(delay)
+    action.release(element)
     action.perform()
-
 
 # Prepare a list of URLs to scrape and a dict to hold results
 base_url = 'https://www.coursera.org/learn/astro/home/week/'
@@ -136,9 +119,12 @@ results = {}
 # Set up the webdriver with the Buster add-on
 options = Options()
 # options.headless = True
-driver = webdriver.Firefox(options=options)
-driver.install_addon(
-    str(Path('buster_captcha_solver_for_humans-1.0.1-an+fx.xpi').resolve()))
+profile_path = str(Path('~/Library/Application Support/Firefox/Profiles'
+                        '/ghacks-user.js').expanduser())
+profile = webdriver.FirefoxProfile(profile_path)
+driver = webdriver.Firefox(options=options, firefox_profile=profile)
+# driver.install_addon(
+#     str(Path('buster_captcha_solver_for_humans-1.0.1-an+fx.xpi').resolve()))
 
 # Log in to Coursera
 (username, password) = get_credentials(Path('credentials.yml').resolve())
