@@ -1,3 +1,6 @@
+# Private
+*.yml
+
 # PyCharm
 .idea
 
