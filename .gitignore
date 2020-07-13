@@ -1,6 +1,7 @@
 # Private
 *.yml
 !credentials-example.yml
+*.pkl
 
 # PyCharm
 .idea
